@@ -85,6 +85,6 @@ MIT License
 
 ## 相关链接
 
-- [ECH Workers 上游项目](https://github.com/ntbowen/ech-wk)
+- [ECH Workers 上游项目](https://github.com/byJoey/ech-wk)
 - [OpenWrt](https://openwrt.org/)
 - [LuCI](https://github.com/openwrt/luci)
