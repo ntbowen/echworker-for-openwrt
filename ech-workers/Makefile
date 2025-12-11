@@ -5,7 +5,7 @@ PKG_VERSION:=1.4
 PKG_RELEASE:=4
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/ntbowen/ech-wk.git
+PKG_SOURCE_URL:=https://github.com/byJoey/ech-wk.git
 PKG_SOURCE_VERSION:=main
 PKG_MIRROR_HASH:=skip
 
