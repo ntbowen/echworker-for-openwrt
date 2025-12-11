@@ -1,0 +1,43 @@
+#!/bin/sh
+# ECH Workers 服务控制脚本
+# 用于 LuCI 界面控制服务启停
+
+ACTION="$1"
+
+case "$ACTION" in
+    restart)
+        # 停止 procd 管理的服务
+        ubus call service delete '{"name":"echworkers"}' 2>/dev/null
+        # 杀死残留进程
+        killall -9 ech-workers dns2socks 2>/dev/null
+        sleep 1
+        # 后台启动服务
+        /etc/init.d/echworkers start &
+        echo "Service restarting..."
+        ;;
+    stop)
+        # 停止 procd 管理的服务
+        ubus call service delete '{"name":"echworkers"}' 2>/dev/null
+        # 杀死残留进程
+        killall -9 ech-workers dns2socks 2>/dev/null
+        echo "Service stopped"
+        ;;
+    start)
+        # 后台启动服务
+        /etc/init.d/echworkers start &
+        echo "Service starting..."
+        ;;
+    status)
+        if pgrep -x ech-workers >/dev/null 2>&1; then
+            echo "running"
+        else
+            echo "stopped"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0

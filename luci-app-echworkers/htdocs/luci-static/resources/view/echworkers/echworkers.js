@@ -7,6 +7,25 @@
 'require rpc';
 'require poll';
 
+var GFW_SOURCES = {
+	'gfwlist': {
+		name: 'GFWList (GitHub)',
+		url: 'https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt'
+	},
+	'gfwlist_mirror': {
+		name: 'GFWList (jsDelivr CDN)',
+		url: 'https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt'
+	},
+	'gfwlist_gitee': {
+		name: 'GFWList (Gitee 国内镜像)',
+		url: 'https://gitee.com/Loyalsoldier/v2ray-rules-dat/raw/release/gfw.txt'
+	},
+	'custom': {
+		name: _('Custom URL'),
+		url: ''
+	}
+};
+
 var callServiceList = rpc.declare({
 	object: 'service',
 	method: 'list',
@@ -33,6 +52,28 @@ function renderStatus(isRunning) {
 		renderHTML = String.format(spanTemp, 'red', _('Not Running'));
 	}
 	return renderHTML;
+}
+
+function getGfwlistStatus() {
+	return fs.exec_direct('/usr/bin/echworkers-gfwlist', ['status']).then(function(res) {
+		return res || _('Unable to get status');
+	}).catch(function() {
+		return _('GFW list script not found');
+	});
+}
+
+function updateGfwlist(source, customUrl) {
+	var args = ['update'];
+	if (customUrl) {
+		args.push(customUrl);
+	} else if (source) {
+		args.push(source);
+	}
+	return fs.exec_direct('/usr/bin/echworkers-gfwlist', args).then(function(res) {
+		return res || _('Update completed');
+	}).catch(function(err) {
+		return _('Update failed: ') + (err.message || err);
+	});
 }
 
 function getLogs() {
@@ -72,6 +113,15 @@ return view.extend({
 		]);
 	},
 
+	handleSaveApply: function(ev, mode) {
+		return this.handleSave(ev).then(function() {
+			ui.changes.apply(mode == '0');
+		}).then(function() {
+			// 使用控制脚本重启服务
+			return fs.exec_direct('/usr/bin/echworkers-control', ['restart']);
+		}).catch(function() {});
+	},
+
 	render: function(data) {
 		var isRunning = data[1];
 		var m, s, o;
@@ -79,21 +129,25 @@ return view.extend({
 		m = new form.Map('echworkers', _('ECH Workers'),
 			_('ECH (Encrypted Client Hello) Workers proxy client with smart routing support.'));
 
-		// 服务状态
+		// 服务状态（使用轮询即时更新）
 		s = m.section(form.TypedSection, '_status');
 		s.anonymous = true;
 		s.render = function() {
-			return Promise.all([
-				getServiceStatus()
-			]).then(function(res) {
-				var status = res[0];
-				return E('div', { 'class': 'cbi-section' }, [
-					E('div', { 'class': 'cbi-value' }, [
-						E('label', { 'class': 'cbi-value-title' }, _('Service Status')),
-						E('div', { 'class': 'cbi-value-field', 'id': 'echworkers_status' }, renderStatus(status))
-					])
-				]);
-			});
+			poll.add(function() {
+				return getServiceStatus().then(function(isRunning) {
+					var el = document.getElementById('echworkers_status');
+					if (el) {
+						el.innerHTML = renderStatus(isRunning);
+					}
+				});
+			}, 2);
+
+			return E('div', { 'class': 'cbi-section' }, [
+				E('div', { 'class': 'cbi-value' }, [
+					E('label', { 'class': 'cbi-value-title' }, _('Service Status')),
+					E('div', { 'class': 'cbi-value-field', 'id': 'echworkers_status' }, renderStatus(isRunning))
+				])
+			]);
 		};
 
 		// 基本设置
@@ -161,6 +215,97 @@ return view.extend({
 			_('ECH configuration domain'));
 		o.placeholder = 'cloudflare-ech.com';
 		o.default = 'cloudflare-ech.com';
+
+		// GFW 列表管理
+		s = m.section(form.TypedSection, 'gfwlist', _('GFW List Management'));
+		s.anonymous = true;
+		s.addremove = false;
+
+		o = s.option(form.Flag, 'enabled', _('Enable GFW List'),
+			_('Use GFW domain list for DNS anti-pollution'));
+		o.rmempty = false;
+		o.default = '1';
+
+		o = s.option(form.ListValue, 'source', _('List Source'),
+			_('Select GFW list download source'));
+		o.value('gfwlist', 'GFWList (Fastly CDN)');
+		o.value('gfwlist_mirror', 'GFWList (jsDelivr CDN)');
+		o.value('gfwlist_ghproxy', 'GFWList (GHProxy)');
+		o.value('custom', _('Custom URL'));
+		o.default = 'gfwlist';
+
+		o = s.option(form.Value, 'custom_url', _('Custom URL'),
+			_('Enter custom GFW list URL'));
+		o.placeholder = 'https://example.com/gfwlist.txt';
+		o.depends('source', 'custom');
+
+		o = s.option(form.Flag, 'auto_update', _('Auto Update'),
+			_('Automatically update GFW list periodically'));
+		o.rmempty = false;
+		o.default = '0';
+
+		o = s.option(form.ListValue, 'update_interval', _('Update Interval'),
+			_('How often to update the GFW list'));
+		o.value('6', _('Every 6 hours'));
+		o.value('12', _('Every 12 hours'));
+		o.value('24', _('Every day'));
+		o.value('72', _('Every 3 days'));
+		o.value('168', _('Every week'));
+		o.default = '24';
+		o.depends('auto_update', '1');
+
+		// GFW 列表状态和操作
+		s = m.section(form.TypedSection, '_gfwlist_status');
+		s.anonymous = true;
+		s.render = function() {
+			var statusArea = E('pre', {
+				'id': 'gfwlist_status',
+				'style': 'padding:10px;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;min-height:80px;'
+			}, _('Loading...'));
+
+			var updateBtn = E('button', {
+				'class': 'btn cbi-button cbi-button-action',
+				'click': function() {
+					var source = document.querySelector('select[name="cbid.echworkers.gfwlist.source"]');
+					var customUrl = document.querySelector('input[name="cbid.echworkers.gfwlist.custom_url"]');
+					var sourceVal = source ? source.value : 'gfwlist';
+					var urlVal = (sourceVal === 'custom' && customUrl) ? customUrl.value : '';
+					
+					statusArea.textContent = _('Updating...');
+					updateBtn.disabled = true;
+					
+					updateGfwlist(sourceVal, urlVal).then(function(res) {
+						statusArea.textContent = res;
+						updateBtn.disabled = false;
+					});
+				}
+			}, _('Update Now'));
+
+			var refreshBtn = E('button', {
+				'class': 'btn cbi-button',
+				'style': 'margin-left:10px;',
+				'click': function() {
+					statusArea.textContent = _('Loading...');
+					getGfwlistStatus().then(function(res) {
+						statusArea.textContent = res;
+					});
+				}
+			}, _('Refresh Status'));
+
+			// 初始加载状态
+			getGfwlistStatus().then(function(res) {
+				statusArea.textContent = res;
+			});
+
+			return E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, _('GFW List Status')),
+				E('div', { 'style': 'margin-bottom:10px;' }, [
+					updateBtn,
+					refreshBtn
+				]),
+				statusArea
+			]);
+		};
 
 		// 日志区域
 		s = m.section(form.TypedSection, '_logs', _('Service Logs'));

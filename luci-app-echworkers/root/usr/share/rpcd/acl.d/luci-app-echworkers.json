@@ -4,16 +4,22 @@
 		"read": {
 			"file": {
 				"/etc/init.d/echworkers": [ "read" ],
-				"/sbin/logread": [ "exec" ]
+				"/sbin/logread": [ "exec" ],
+				"/usr/bin/echworkers-gfwlist": [ "exec" ],
+				"/usr/bin/echworkers-control": [ "exec" ],
+				"/etc/echworkers/*": [ "read" ]
 			},
 			"ubus": {
-				"service": [ "list" ]
+				"service": [ "list", "delete" ]
 			},
 			"uci": [ "echworkers" ]
 		},
 		"write": {
 			"file": {
-				"/etc/init.d/echworkers": [ "exec" ]
+				"/etc/init.d/echworkers": [ "exec" ],
+				"/usr/bin/echworkers-gfwlist": [ "exec" ],
+				"/usr/bin/echworkers-control": [ "exec" ],
+				"/etc/echworkers/*": [ "write" ]
 			},
 			"uci": [ "echworkers" ]
 		}

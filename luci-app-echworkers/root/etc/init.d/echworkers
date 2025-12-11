@@ -7,6 +7,10 @@ USE_PROCD=1
 PROG=/usr/bin/ech-workers
 CONFIG=echworkers
 NFT_TABLE=echworkers
+DNS_PORT=5335
+DNSMASQ_CONF=/etc/dnsmasq.conf
+GFW_MARKER="# ECH-Workers GFW DNS"
+GFWLIST_FILE="/etc/echworkers/gfwlist.conf"
 
 # 设置 nftables 透明代理规则（直接重定向到 TPROXY 端口）
 setup_nftables() {
@@ -63,6 +67,88 @@ cleanup_nftables() {
 	logger -t echworkers "nftables rules removed"
 }
 
+# 设置 DNS 防污染（dnsmasq 分流 + dns2socks）
+setup_dns() {
+	local listen_port="$1"
+	
+	# 停止可能存在的进程
+	killall dns2socks 2>/dev/null
+	
+	# 检查依赖
+	if [ ! -x /usr/bin/dns2socks ]; then
+		logger -t echworkers "dns2socks not found, DNS anti-pollution disabled"
+		return 1
+	fi
+	
+	# 启动 dns2socks（通过 SOCKS5 代理查询 8.8.8.8）
+	dns2socks 127.0.0.1:$listen_port 8.8.8.8:53 127.0.0.1:$DNS_PORT /q &
+	sleep 1
+	
+	# 配置 dnsmasq：GFW 域名走 dns2socks，其他走默认
+	sed -i "/$GFW_MARKER/,\$d" $DNSMASQ_CONF
+	
+	# 添加 GFW 列表配置
+	echo "" >> $DNSMASQ_CONF
+	echo "$GFW_MARKER" >> $DNSMASQ_CONF
+	echo "filter-AAAA" >> $DNSMASQ_CONF
+	
+	# 如果 GFW 列表文件存在，使用它；否则使用内置列表
+	if [ -f "$GFWLIST_FILE" ] && [ -s "$GFWLIST_FILE" ]; then
+		grep "^server=/" "$GFWLIST_FILE" >> $DNSMASQ_CONF
+		local count=$(grep -c "^server=/" "$GFWLIST_FILE")
+		logger -t echworkers "DNS anti-pollution enabled (dns2socks:$DNS_PORT, $count domains from gfwlist)"
+	else
+		# 内置基础列表
+		cat >> $DNSMASQ_CONF << EOF
+server=/google.com/127.0.0.1#$DNS_PORT
+server=/youtube.com/127.0.0.1#$DNS_PORT
+server=/googleapis.com/127.0.0.1#$DNS_PORT
+server=/gstatic.com/127.0.0.1#$DNS_PORT
+server=/googlevideo.com/127.0.0.1#$DNS_PORT
+server=/ytimg.com/127.0.0.1#$DNS_PORT
+server=/ggpht.com/127.0.0.1#$DNS_PORT
+server=/twitter.com/127.0.0.1#$DNS_PORT
+server=/x.com/127.0.0.1#$DNS_PORT
+server=/facebook.com/127.0.0.1#$DNS_PORT
+server=/instagram.com/127.0.0.1#$DNS_PORT
+server=/telegram.org/127.0.0.1#$DNS_PORT
+server=/t.me/127.0.0.1#$DNS_PORT
+server=/github.com/127.0.0.1#$DNS_PORT
+server=/githubusercontent.com/127.0.0.1#$DNS_PORT
+server=/whatsapp.com/127.0.0.1#$DNS_PORT
+server=/signal.org/127.0.0.1#$DNS_PORT
+server=/openai.com/127.0.0.1#$DNS_PORT
+server=/anthropic.com/127.0.0.1#$DNS_PORT
+server=/claude.ai/127.0.0.1#$DNS_PORT
+server=/chatgpt.com/127.0.0.1#$DNS_PORT
+server=/wikipedia.org/127.0.0.1#$DNS_PORT
+server=/wikimedia.org/127.0.0.1#$DNS_PORT
+server=/reddit.com/127.0.0.1#$DNS_PORT
+server=/twitch.tv/127.0.0.1#$DNS_PORT
+server=/discord.com/127.0.0.1#$DNS_PORT
+server=/spotify.com/127.0.0.1#$DNS_PORT
+server=/netflix.com/127.0.0.1#$DNS_PORT
+EOF
+		logger -t echworkers "DNS anti-pollution enabled (dns2socks:$DNS_PORT, builtin list)"
+	fi
+	
+	# 异步重启 dnsmasq，避免阻塞
+	( sleep 1; /etc/init.d/dnsmasq restart ) &
+}
+
+# 清理 DNS 配置
+cleanup_dns() {
+	killall dns2socks 2>/dev/null
+	
+	# 移除 dnsmasq 配置
+	sed -i "/$GFW_MARKER/,\$d" $DNSMASQ_CONF
+	
+	# 异步重启 dnsmasq，避免阻塞
+	( sleep 1; /etc/init.d/dnsmasq restart ) &
+	
+	logger -t echworkers "DNS anti-pollution disabled"
+}
+
 start_service() {
 	config_load "$CONFIG"
 	
@@ -107,26 +193,43 @@ start_service() {
 	procd_set_param file /etc/config/echworkers
 	procd_close_instance
 	
-	# 透明代理模式：设置 nftables 规则
+	# 透明代理模式：异步设置 nftables 规则和 DNS 防污染
 	if [ "$transparent" = "1" ]; then
-		# 等待服务启动
-		sleep 1
-		
-		# 解析服务器 IP（用于排除规则）
-		local server_ip_resolved=""
-		if [ -n "$ip" ]; then
-			server_ip_resolved="$ip"
-		else
-			local server_host=$(echo "$server" | cut -d: -f1)
-			server_ip_resolved=$(nslookup "$server_host" 2>/dev/null | grep -A1 'Name:' | grep 'Address' | head -1 | awk '{print $2}')
-		fi
-		
-		setup_nftables "$tproxy_port" "$server_ip_resolved"
+		(
+			# 等待服务启动
+			sleep 2
+			
+			# 解析服务器 IP（用于排除规则）
+			local server_ip_resolved=""
+			if [ -n "$ip" ]; then
+				server_ip_resolved="$ip"
+			else
+				local server_host=$(echo "$server" | cut -d: -f1)
+				server_ip_resolved=$(nslookup "$server_host" 2>/dev/null | grep -A1 'Name:' | grep 'Address' | head -1 | awk '{print $2}')
+			fi
+			
+			setup_nftables "$tproxy_port" "$server_ip_resolved"
+			
+			# 设置 DNS 防污染
+			local listen_port=$(echo "$listen" | cut -d: -f2)
+			setup_dns "$listen_port"
+			
+			# 设置定时更新
+			setup_cron
+		) &
 	fi
 }
 
 stop_service() {
-	cleanup_nftables
+	# 强制停止 ech-workers 进程
+	killall -9 ech-workers 2>/dev/null
+	
+	# 异步清理，避免卸载时卡住
+	(
+		cleanup_nftables
+		cleanup_dns
+		cleanup_cron
+	) &
 }
 
 service_triggers() {
@@ -136,4 +239,33 @@ service_triggers() {
 reload_service() {
 	stop
 	start
+}
+
+# 设置定时更新 GFW 列表
+setup_cron() {
+	local auto_update interval
+	config_get auto_update gfwlist auto_update 0
+	config_get interval gfwlist update_interval 24
+	
+	# 移除旧的 cron 任务
+	sed -i '/echworkers-gfwlist/d' /etc/crontabs/root 2>/dev/null
+	
+	if [ "$auto_update" = "1" ]; then
+		# 根据间隔设置 cron
+		case "$interval" in
+			6)  echo "0 */6 * * * /usr/bin/echworkers-gfwlist update >/dev/null 2>&1" >> /etc/crontabs/root ;;
+			12) echo "0 */12 * * * /usr/bin/echworkers-gfwlist update >/dev/null 2>&1" >> /etc/crontabs/root ;;
+			24) echo "0 4 * * * /usr/bin/echworkers-gfwlist update >/dev/null 2>&1" >> /etc/crontabs/root ;;
+			72) echo "0 4 */3 * * /usr/bin/echworkers-gfwlist update >/dev/null 2>&1" >> /etc/crontabs/root ;;
+			168) echo "0 4 * * 0 /usr/bin/echworkers-gfwlist update >/dev/null 2>&1" >> /etc/crontabs/root ;;
+		esac
+		/etc/init.d/cron restart
+		logger -t echworkers "GFW list auto-update enabled (every $interval hours)"
+	fi
+}
+
+# 清理 cron 任务
+cleanup_cron() {
+	sed -i '/echworkers-gfwlist/d' /etc/crontabs/root 2>/dev/null
+	/etc/init.d/cron restart 2>/dev/null
 }

@@ -1,0 +1,187 @@
+#!/bin/sh
+# GFW 列表更新脚本
+
+GFWLIST_DIR="/etc/echworkers"
+GFWLIST_FILE="$GFWLIST_DIR/gfwlist.conf"
+DNSMASQ_CONF="/etc/dnsmasq.conf"
+GFW_MARKER="# ECH-Workers GFW DNS"
+DNS_PORT=5335
+
+# GFW 列表源
+SOURCES="
+gfwlist|https://fastly.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt
+gfwlist_mirror|https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt
+gfwlist_github|https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+gfwlist_ghproxy|https://ghproxy.com/https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+"
+
+usage() {
+    echo "Usage: $0 <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  update [source|url]  - Update GFW list from source or custom URL"
+    echo "  apply                - Apply GFW list to dnsmasq"
+    echo "  status               - Show current GFW list status"
+    echo "  sources              - List available sources"
+    echo ""
+    echo "Available sources:"
+    echo "$SOURCES" | grep -v '^$' | while read line; do
+        name=$(echo "$line" | cut -d'|' -f1)
+        url=$(echo "$line" | cut -d'|' -f2)
+        echo "  $name"
+    done
+}
+
+get_source_url() {
+    local source="$1"
+    echo "$SOURCES" | grep "^$source|" | cut -d'|' -f2
+}
+
+download_gfwlist() {
+    local url="$1"
+    local tmp_file="/tmp/gfwlist.tmp"
+    
+    echo "正在下载: $url"
+    
+    # 尝试使用 curl 或 wget
+    if command -v curl >/dev/null 2>&1; then
+        curl -sL --connect-timeout 30 -o "$tmp_file" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=30 -O "$tmp_file" "$url"
+    else
+        echo "错误: 未找到 curl 或 wget"
+        return 1
+    fi
+    
+    if [ ! -s "$tmp_file" ]; then
+        echo "错误: 下载失败或文件为空"
+        rm -f "$tmp_file"
+        return 1
+    fi
+    
+    # 检查文件格式并转换
+    mkdir -p "$GFWLIST_DIR"
+    
+    # 检查是否是 dnsmasq 格式
+    if grep -q "^server=/" "$tmp_file"; then
+        # 已经是 dnsmasq 格式，直接使用
+        cp "$tmp_file" "$GFWLIST_FILE"
+    else
+        # 纯域名列表，转换为 dnsmasq 格式
+        echo "# GFW List - Updated: $(date)" > "$GFWLIST_FILE"
+        grep -v '^#' "$tmp_file" | grep -v '^$' | while read domain; do
+            # 清理域名（去除可能的前缀）
+            domain=$(echo "$domain" | sed 's/^full://;s/^domain://;s/^regexp://;s/^keyword://')
+            [ -n "$domain" ] && echo "server=/$domain/127.0.0.1#$DNS_PORT"
+        done >> "$GFWLIST_FILE"
+    fi
+    
+    rm -f "$tmp_file"
+    
+    local count=$(grep -c "^server=/" "$GFWLIST_FILE" 2>/dev/null || echo 0)
+    echo "已下载 $count 个域名"
+    
+    return 0
+}
+
+apply_gfwlist() {
+    if [ ! -f "$GFWLIST_FILE" ]; then
+        echo "错误: GFW 列表文件不存在: $GFWLIST_FILE"
+        echo "请先运行 '$0 update'"
+        return 1
+    fi
+    
+    # 移除旧配置
+    sed -i "/$GFW_MARKER/,\$d" "$DNSMASQ_CONF"
+    
+    # 添加新配置
+    echo "" >> "$DNSMASQ_CONF"
+    echo "$GFW_MARKER" >> "$DNSMASQ_CONF"
+    echo "filter-AAAA" >> "$DNSMASQ_CONF"
+    cat "$GFWLIST_FILE" >> "$DNSMASQ_CONF"
+    
+    # 重启 dnsmasq
+    /etc/init.d/dnsmasq restart
+    
+    local count=$(grep -c "^server=/" "$GFWLIST_FILE" 2>/dev/null || echo 0)
+    echo "已应用 $count 个域名到 dnsmasq"
+    
+    return 0
+}
+
+show_status() {
+    echo "=== GFW 列表状态 ==="
+    
+    if [ -f "$GFWLIST_FILE" ]; then
+        local count=$(grep -c "^server=/" "$GFWLIST_FILE" 2>/dev/null || echo 0)
+        local update_time=$(head -1 "$GFWLIST_FILE" | grep "Updated:" | sed 's/.*Updated: //')
+        echo "文件: $GFWLIST_FILE"
+        echo "域名数量: $count"
+        [ -n "$update_time" ] && echo "更新时间: $update_time"
+    else
+        echo "GFW 列表文件不存在"
+    fi
+    
+    echo ""
+    echo "=== dnsmasq 状态 ==="
+    if grep -q "$GFW_MARKER" "$DNSMASQ_CONF"; then
+        local applied=$(grep -c "^server=/" "$DNSMASQ_CONF" 2>/dev/null || echo 0)
+        echo "已应用: 是 ($applied 个域名)"
+    else
+        echo "已应用: 否"
+    fi
+}
+
+list_sources() {
+    echo "Available GFW list sources:"
+    echo ""
+    echo "$SOURCES" | grep -v '^$' | while read line; do
+        name=$(echo "$line" | cut -d'|' -f1)
+        url=$(echo "$line" | cut -d'|' -f2)
+        printf "  %-20s %s\n" "$name" "$url"
+    done
+}
+
+# 主逻辑
+case "$1" in
+    update)
+        source_or_url="$2"
+        if [ -z "$source_or_url" ]; then
+            # 从 UCI 读取配置
+            source=$(uci -q get echworkers.gfwlist.source)
+            custom_url=$(uci -q get echworkers.gfwlist.custom_url)
+            
+            if [ -n "$custom_url" ]; then
+                url="$custom_url"
+            elif [ -n "$source" ]; then
+                url=$(get_source_url "$source")
+            else
+                url=$(get_source_url "gfwlist")
+            fi
+        elif echo "$source_or_url" | grep -q "^http"; then
+            url="$source_or_url"
+        else
+            url=$(get_source_url "$source_or_url")
+        fi
+        
+        if [ -z "$url" ]; then
+            echo "错误: 无效的源或 URL"
+            exit 1
+        fi
+        
+        download_gfwlist "$url" && apply_gfwlist
+        ;;
+    apply)
+        apply_gfwlist
+        ;;
+    status)
+        show_status
+        ;;
+    sources)
+        list_sources
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

@@ -9,7 +9,8 @@ OpenWrt 平台的 ECH (Encrypted Client Hello) Workers 代理客户端。
 - ✅ **透明代理** - 内置 TPROXY 支持，LAN 设备无需任何配置即可翻墙
 - ✅ **智能分流** - 三种分流模式：全局代理、跳过中国大陆、直连模式
 - ✅ **IPv4/IPv6 双栈** - 完整支持 IPv4 和 IPv6 地址的分流判断
-- ✅ **Web 界面管理** - 通过 LuCI 界面配置和管理
+- ✅ **GFW 列表管理** - 支持多源下载、定时更新、DNS 防污染
+- ✅ **Web 界面管理** - 通过 LuCI 界面配置和管理，实时状态显示
 - ✅ **独立运行** - 无需 PassWall、OpenClash 等其他插件配合
 
 ## 包含组件
@@ -78,6 +79,17 @@ make package/luci-app-echworkers/compile V=s
 - OpenWrt 21.02 或更高版本
 - Go 1.21+ (编译时需要)
 - nftables (透明代理需要)
+- dns2socks (DNS 防污染需要，会自动安装)
+
+## 更新日志
+
+### v1.0.0-r3 (2025-12-11)
+- 新增 GFW 列表管理功能（多源下载、定时更新）
+- 新增 DNS 防污染（通过 dns2socks 代理 DNS 查询）
+- 修复服务启停控制问题
+- 修复包卸载时卡住的问题
+- 优化 LuCI 界面状态实时更新
+- 中文化 GFW 列表脚本输出信息
 
 ## 许可证
 
