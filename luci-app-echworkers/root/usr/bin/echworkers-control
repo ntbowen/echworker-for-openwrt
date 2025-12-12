@@ -10,6 +10,8 @@ case "$ACTION" in
         ubus call service delete '{"name":"echworkers"}' 2>/dev/null
         # 杀死残留进程
         killall -9 ech-workers dns2socks 2>/dev/null
+        # 清理 dnsmasq 配置
+        sed -i '/# ECH-Workers GFW DNS/,$d' /etc/dnsmasq.conf
         sleep 1
         # 后台启动服务
         /etc/init.d/echworkers start &
@@ -20,6 +22,10 @@ case "$ACTION" in
         ubus call service delete '{"name":"echworkers"}' 2>/dev/null
         # 杀死残留进程
         killall -9 ech-workers dns2socks 2>/dev/null
+        # 清理 dnsmasq 配置
+        sed -i '/# ECH-Workers GFW DNS/,$d' /etc/dnsmasq.conf
+        # 重启 dnsmasq 恢复正常 DNS
+        ( sleep 1; /etc/init.d/dnsmasq restart ) &
         echo "Service stopped"
         ;;
     start)

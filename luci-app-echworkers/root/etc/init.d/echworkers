@@ -221,14 +221,22 @@ start_service() {
 }
 
 stop_service() {
-	# 强制停止 ech-workers 进程
+	# 强制停止所有相关进程（同步执行，确保进程被杀死）
 	killall -9 ech-workers 2>/dev/null
+	killall -9 dns2socks 2>/dev/null
 	
-	# 异步清理，避免卸载时卡住
+	# 同步清理 nftables 和 cron（这些不会卡住）
+	cleanup_nftables
+	cleanup_cron
+	
+	# 异步清理 dnsmasq 配置并重启（避免卡住）
 	(
-		cleanup_nftables
-		cleanup_dns
-		cleanup_cron
+		# 移除 dnsmasq 配置
+		sed -i "/$GFW_MARKER/,\$d" $DNSMASQ_CONF
+		# 重启 dnsmasq
+		sleep 1
+		/etc/init.d/dnsmasq restart
+		logger -t echworkers "DNS anti-pollution disabled"
 	) &
 }
 
