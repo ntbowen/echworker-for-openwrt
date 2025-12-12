@@ -12,10 +12,12 @@ include $(TOPDIR)/feeds/luci/luci.mk
 
 define Package/luci-app-echworkers/postinst
 #!/bin/sh
+# 设置脚本执行权限（无论是否在 sysupgrade 环境）
+chmod +x $${IPKG_INSTROOT}/usr/bin/echworkers-gfwlist 2>/dev/null
+chmod +x $${IPKG_INSTROOT}/usr/bin/echworkers-control 2>/dev/null
+chmod +x $${IPKG_INSTROOT}/etc/init.d/echworkers 2>/dev/null
+# 仅在非 sysupgrade 环境下启用服务
 [ -n "$${IPKG_INSTROOT}" ] || {
-	chmod +x /usr/bin/echworkers-gfwlist 2>/dev/null
-	chmod +x /usr/bin/echworkers-control 2>/dev/null
-	chmod +x /etc/init.d/echworkers 2>/dev/null
 	/etc/init.d/echworkers enable 2>/dev/null
 }
 exit 0
