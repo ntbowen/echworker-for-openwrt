@@ -83,6 +83,16 @@ make package/luci-app-echworkers/compile V=s
 
 ## 更新日志
 
+### v1.0.0-r4 (2025-12-14)
+- **重大修复**: 解决 LuCI 界面"启用"复选框无法正确控制服务的问题
+- 重写 `echworkers-control` 直接启动进程，避免 procd 阻塞导致 UI 卡住
+- 修复状态显示与实际相反的问题（使用 `fs.exec_direct` 检查进程状态）
+- 修复 `handleSaveApply` 时序问题，确保 UCI 配置先保存再执行 restart
+- 添加 ech-workers 进程输出重定向到 syslog，方便查看日志
+- 修复 gfwlist 路径为 `/etc/echworkers/gfwlist.conf`
+- 使用 `killall -HUP dnsmasq` 替代 `dnsmasq restart` 避免网络中断
+- 所有场景测试通过：禁用服务、仅 SOCKS5、完整透明代理、场景切换
+
 ### v1.0.0-r3 (2025-12-11)
 - 新增 GFW 列表管理功能（多源下载、定时更新）
 - 新增 DNS 防污染（通过 dns2socks 代理 DNS 查询）
