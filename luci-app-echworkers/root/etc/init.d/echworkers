@@ -221,23 +221,21 @@ start_service() {
 }
 
 stop_service() {
-	# 强制停止所有相关进程（同步执行，确保进程被杀死）
+	# 强制停止所有相关进程
 	killall -9 ech-workers 2>/dev/null
 	killall -9 dns2socks 2>/dev/null
 	
-	# 同步清理 nftables 和 cron（这些不会卡住）
+	# 清理 nftables 和 cron
 	cleanup_nftables
 	cleanup_cron
 	
-	# 异步清理 dnsmasq 配置并重启（避免卡住）
-	(
-		# 移除 dnsmasq 配置
-		sed -i "/$GFW_MARKER/,\$d" $DNSMASQ_CONF
-		# 重启 dnsmasq
-		sleep 1
-		/etc/init.d/dnsmasq restart
-		logger -t echworkers "DNS anti-pollution disabled"
-	) &
+	# 清理 dnsmasq 配置（不重启，避免网络中断）
+	sed -i "/$GFW_MARKER/,\$d" $DNSMASQ_CONF
+	
+	# 使用 dnsmasq reload 而不是 restart（不会中断网络）
+	killall -HUP dnsmasq 2>/dev/null
+	
+	logger -t echworkers "Service stopped"
 }
 
 service_triggers() {
@@ -245,8 +243,38 @@ service_triggers() {
 }
 
 reload_service() {
-	stop
-	start
+	# 使用 nohup 完全脱离，避免阻塞 procd
+	nohup /usr/bin/echworkers-control restart >/dev/null 2>&1 &
+}
+
+# 设置透明代理（供 echworkers-control 调用）
+setup_transparent() {
+	config_load "$CONFIG"
+	
+	local server listen ip transparent tproxy_port
+	config_get server config server
+	config_get listen config listen "127.0.0.1:30001"
+	config_get ip config ip
+	config_get transparent config transparent 0
+	config_get tproxy_port config tproxy_port 12345
+	
+	[ "$transparent" = "1" ] || return 0
+	
+	# 解析服务器 IP
+	local server_ip_resolved=""
+	if [ -n "$ip" ]; then
+		server_ip_resolved="$ip"
+	else
+		local server_host=$(echo "$server" | cut -d: -f1)
+		server_ip_resolved=$(nslookup "$server_host" 2>/dev/null | grep -A1 'Name:' | grep 'Address' | head -1 | awk '{print $2}')
+	fi
+	
+	setup_nftables "$tproxy_port" "$server_ip_resolved"
+	
+	local listen_port=$(echo "$listen" | cut -d: -f2)
+	setup_dns "$listen_port"
+	
+	setup_cron
 }
 
 # 设置定时更新 GFW 列表

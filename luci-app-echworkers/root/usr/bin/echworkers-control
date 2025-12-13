@@ -1,73 +1,167 @@
 #!/bin/sh
 # ECH Workers 服务控制脚本
-# 用于 LuCI 界面控制服务启停
-#
-# 控制逻辑：
-# - enabled=0: 停止所有（ech-workers、dns2socks、nftables、dnsmasq 配置）
-# - enabled=1, transparent=0: 只保留 ech-workers（SOCKS5 代理），清理透明代理相关
-# - enabled=1, transparent=1: 启动所有
+# 用于 LuCI 界面控制服务启停（不调用 init 脚本，避免 procd 阻塞）
 
 ACTION="$1"
+PROG="/usr/bin/ech-workers"
+CONFIG="echworkers"
 
-# 清理透明代理相关配置（nftables、dns2socks、dnsmasq GFW 配置）
+# 清理透明代理相关配置
 cleanup_transparent() {
-    # 清理 nftables 规则
     nft delete table inet echworkers 2>/dev/null
-    # 停止 dns2socks
     killall -9 dns2socks 2>/dev/null
-    # 清理 dnsmasq GFW 配置
     sed -i '/# ECH-Workers GFW DNS/,$d' /etc/dnsmasq.conf
-    # 同步重启 dnsmasq 恢复正常 DNS
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+    killall -HUP dnsmasq 2>/dev/null
+}
+
+# 设置透明代理（nftables + dns2socks + dnsmasq）
+setup_transparent_proxy() {
+    local server=$(uci -q get $CONFIG.config.server)
+    local listen=$(uci -q get $CONFIG.config.listen)
+    local ip=$(uci -q get $CONFIG.config.ip)
+    local tproxy_port=$(uci -q get $CONFIG.config.tproxy_port)
+    
+    [ -z "$listen" ] && listen="127.0.0.1:30001"
+    [ -z "$tproxy_port" ] && tproxy_port="12345"
+    
+    local listen_port=$(echo "$listen" | cut -d: -f2)
+    
+    # 解析服务器 IP
+    local server_ip=""
+    if [ -n "$ip" ]; then
+        server_ip="$ip"
+    else
+        local server_host=$(echo "$server" | cut -d: -f1)
+        server_ip=$(nslookup "$server_host" 2>/dev/null | grep -A1 'Name:' | grep 'Address' | head -1 | awk '{print $2}')
+    fi
+    
+    # 设置 nftables 规则
+    nft delete table inet echworkers 2>/dev/null
+    nft -f - <<EOF
+table inet echworkers {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        ip daddr 127.0.0.0/8 return
+        ip daddr 10.0.0.0/8 return
+        ip daddr 172.16.0.0/12 return
+        ip daddr 192.168.0.0/16 return
+        ip daddr 224.0.0.0/4 return
+        ip daddr 255.255.255.255 return
+        ${server_ip:+ip daddr $server_ip return}
+        meta l4proto tcp redirect to :$tproxy_port
+    }
+    chain output {
+        type nat hook output priority -100; policy accept;
+        meta skuid root return
+        ip daddr 127.0.0.0/8 return
+        ip daddr 10.0.0.0/8 return
+        ip daddr 172.16.0.0/12 return
+        ip daddr 192.168.0.0/16 return
+        ip daddr 224.0.0.0/4 return
+        ip daddr 255.255.255.255 return
+        ${server_ip:+ip daddr $server_ip return}
+        meta l4proto tcp redirect to :$tproxy_port
+    }
+}
+EOF
+    logger -t echworkers "nftables TPROXY rules applied (port: $tproxy_port)"
+    
+    # 启动 dns2socks
+    killall -9 dns2socks 2>/dev/null
+    dns2socks 127.0.0.1:$listen_port 8.8.8.8:53 127.0.0.1:5335 >/dev/null 2>&1 &
+    
+    # 设置 dnsmasq GFW 配置
+    local gfw_file="/etc/echworkers/gfwlist.conf"
+    sed -i '/# ECH-Workers GFW DNS/,$d' /etc/dnsmasq.conf
+    
+    if [ -f "$gfw_file" ]; then
+        echo "# ECH-Workers GFW DNS anti-pollution" >> /etc/dnsmasq.conf
+        local count=0
+        while IFS= read -r domain || [ -n "$domain" ]; do
+            [ -z "$domain" ] && continue
+            [ "${domain#\#}" != "$domain" ] && continue
+            echo "server=/$domain/127.0.0.1#5335" >> /etc/dnsmasq.conf
+            count=$((count + 1))
+        done < "$gfw_file"
+        killall -HUP dnsmasq 2>/dev/null
+        logger -t echworkers "DNS anti-pollution enabled (dns2socks:5335, $count domains)"
+    fi
+}
+
+# 直接启动 ech-workers 进程（不通过 procd）
+start_echworkers() {
+    local server listen token ip dns ech routing transparent tproxy_port
+    
+    server=$(uci -q get $CONFIG.config.server)
+    listen=$(uci -q get $CONFIG.config.listen)
+    token=$(uci -q get $CONFIG.config.token)
+    ip=$(uci -q get $CONFIG.config.ip)
+    dns=$(uci -q get $CONFIG.config.dns)
+    ech=$(uci -q get $CONFIG.config.ech)
+    routing=$(uci -q get $CONFIG.config.routing)
+    transparent=$(uci -q get $CONFIG.config.transparent)
+    tproxy_port=$(uci -q get $CONFIG.config.tproxy_port)
+    
+    [ -z "$listen" ] && listen="127.0.0.1:30001"
+    [ -z "$routing" ] && routing="bypass_cn"
+    [ -z "$tproxy_port" ] && tproxy_port="12345"
+    
+    [ -z "$server" ] && { echo "No server configured"; return 1; }
+    [ -x "$PROG" ] || { echo "ech-workers not found"; return 1; }
+    
+    # 构建命令参数
+    local args="-f $server -l $listen"
+    [ -n "$token" ] && args="$args -token $token"
+    [ -n "$ip" ] && args="$args -ip $ip"
+    [ -n "$dns" ] && args="$args -dns $dns"
+    [ -n "$ech" ] && args="$args -ech $ech"
+    [ -n "$routing" ] && args="$args -routing $routing"
+    [ "$transparent" = "1" ] && args="$args -tproxy 0.0.0.0:$tproxy_port"
+    
+    # 直接后台启动进程，输出重定向到 syslog
+    cd /usr/share/ech-workers 2>/dev/null || cd /tmp
+    $PROG $args 2>&1 | logger -t ech-workers &
+    
+    logger -t echworkers "Service started: $PROG $args"
 }
 
 case "$ACTION" in
     restart)
-        # 读取配置
-        enabled=$(uci -q get echworkers.config.enabled)
-        transparent=$(uci -q get echworkers.config.transparent)
+        enabled=$(uci -q get $CONFIG.config.enabled)
+        transparent=$(uci -q get $CONFIG.config.transparent)
+        
+        # 先停止所有
+        killall -9 ech-workers dns2socks 2>/dev/null
+        cleanup_transparent
         
         if [ "$enabled" != "1" ]; then
-            # 服务禁用：停止所有
-            ubus call service delete '{"name":"echworkers"}' 2>/dev/null
-            killall -9 ech-workers dns2socks 2>/dev/null
-            cleanup_transparent
+            logger -t echworkers "Service stopped (disabled)"
             echo "Service stopped (disabled)"
-        elif [ "$transparent" != "1" ]; then
-            # 服务启用但透明代理关闭：只保留 ech-workers
-            # 先清理透明代理相关
-            cleanup_transparent
-            # 重启 ech-workers（不启动透明代理）
-            ubus call service delete '{"name":"echworkers"}' 2>/dev/null
-            killall -9 ech-workers 2>/dev/null
-            sleep 1
-            /etc/init.d/echworkers start &
-            echo "Service restarting (SOCKS5 only)"
         else
-            # 服务启用且透明代理开启：完整重启
-            ubus call service delete '{"name":"echworkers"}' 2>/dev/null
-            killall -9 ech-workers dns2socks 2>/dev/null
-            sed -i '/# ECH-Workers GFW DNS/,$d' /etc/dnsmasq.conf
-            nft delete table inet echworkers 2>/dev/null
-            sleep 1
-            /etc/init.d/echworkers start &
-            echo "Service restarting (full)"
+            # 启动 ech-workers
+            start_echworkers
+            
+            if [ "$transparent" = "1" ]; then
+                # 异步设置透明代理（不阻塞）
+                ( sleep 2; setup_transparent_proxy ) &
+                echo "Service restarting (full)"
+            else
+                echo "Service restarting (SOCKS5 only)"
+            fi
         fi
         ;;
     stop)
-        # 停止所有服务和清理所有配置
-        ubus call service delete '{"name":"echworkers"}' 2>/dev/null
         killall -9 ech-workers dns2socks 2>/dev/null
         cleanup_transparent
+        logger -t echworkers "Service stopped"
         echo "Service stopped"
         ;;
     start)
-        # 后台启动服务（根据配置决定是否启动透明代理）
-        /etc/init.d/echworkers start &
-        echo "Service starting..."
+        start_echworkers
+        echo "Service started"
         ;;
     status)
-        if pgrep -x ech-workers >/dev/null 2>&1; then
+        if pgrep -f "/usr/bin/ech-workers" >/dev/null 2>&1; then
             echo "running"
         else
             echo "stopped"

@@ -33,13 +33,20 @@ var callServiceList = rpc.declare({
 	expect: { '': {} }
 });
 
+var callInitAction = rpc.declare({
+	object: 'rc',
+	method: 'init',
+	params: ['name', 'action'],
+	expect: { result: false }
+});
+
+
 function getServiceStatus() {
-	return L.resolveDefault(callServiceList('echworkers'), {}).then(function(res) {
-		var isRunning = false;
-		try {
-			isRunning = res['echworkers']['instances']['echworkers']['running'];
-		} catch (e) { }
-		return isRunning;
+	// 使用 echworkers-control status 检查进程是否运行
+	return fs.exec_direct('/usr/bin/echworkers-control', ['status']).then(function(res) {
+		return ((res || '').trim() === 'running');
+	}).catch(function() {
+		return false;
 	});
 }
 
@@ -77,13 +84,14 @@ function updateGfwlist(source, customUrl) {
 }
 
 function getLogs() {
-	// 使用更宽泛的过滤，匹配程序输出的特征标签
+	// 过滤 echworkers 相关日志
 	return fs.exec_direct('/sbin/logread').then(function(res) {
 		if (res && res.trim()) {
-			// 过滤包含 ech-workers 特征标签的日志行
 			var lines = res.trim().split(/\n/).filter(function(line) {
-				// 匹配程序输出的特征: [启动] [代理] [ECH] [SOCKS5] [HTTP] [警告] [加载] [下载] 等
-				return (line.indexOf('[启动]') !== -1 ||
+				// 匹配 echworkers 标签或 ech-workers 进程
+				return (line.indexOf('echworkers') !== -1 ||
+				        line.indexOf('ech-workers') !== -1 ||
+				        line.indexOf('[启动]') !== -1 ||
 				        line.indexOf('[代理]') !== -1 ||
 				        line.indexOf('[ECH]') !== -1 ||
 				        line.indexOf('[SOCKS5]') !== -1 ||
@@ -91,9 +99,7 @@ function getLogs() {
 				        line.indexOf('[UDP]') !== -1 ||
 				        line.indexOf('[警告]') !== -1 ||
 				        line.indexOf('[加载]') !== -1 ||
-				        line.indexOf('[下载]') !== -1 ||
-				        line.indexOf('ech-workers') !== -1) &&
-				       line.indexOf('procd:') === -1;
+				        line.indexOf('[下载]') !== -1);
 			});
 			if (lines.length > 0) {
 				return lines.slice(-100).join('\n');
@@ -115,11 +121,22 @@ return view.extend({
 
 	handleSaveApply: function(ev, mode) {
 		return this.handleSave(ev).then(function() {
-			ui.changes.apply(mode == '0');
+			return ui.changes.apply(mode == '0');
 		}).then(function() {
-			// 使用控制脚本重启服务
-			return fs.exec_direct('/usr/bin/echworkers-control', ['restart']);
-		}).catch(function() {});
+			// 等待 UCI 配置完全写入后再执行 restart
+			return new Promise(function(resolve) {
+				window.setTimeout(function() {
+					fs.exec_direct('/usr/bin/echworkers-control', ['restart']).then(function() {
+						resolve();
+					}).catch(function() {
+						resolve();
+					});
+				}, 1000);
+			});
+		}).then(function() {
+			// 延迟刷新页面（给脚本执行时间）
+			window.setTimeout(function() { location.reload(); }, 3000);
+		});
 	},
 
 	render: function(data) {
@@ -129,7 +146,7 @@ return view.extend({
 		m = new form.Map('echworkers', _('ECH Workers'),
 			_('ECH (Encrypted Client Hello) Workers proxy client with smart routing support.'));
 
-		// 服务状态（使用轮询即时更新）
+		// 服务状态（只显示状态，不显示控制按钮）
 		s = m.section(form.TypedSection, '_status');
 		s.anonymous = true;
 		s.render = function() {

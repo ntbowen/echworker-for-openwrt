@@ -3,14 +3,16 @@
 		"description": "Grant access to ECH Workers configuration",
 		"read": {
 			"file": {
-				"/etc/init.d/echworkers": [ "read" ],
+				"/etc/init.d/echworkers": [ "read", "exec" ],
 				"/sbin/logread": [ "exec" ],
 				"/usr/bin/echworkers-gfwlist": [ "exec" ],
 				"/usr/bin/echworkers-control": [ "exec" ],
 				"/etc/echworkers/*": [ "read" ]
 			},
+			"cgi-io": [ "exec" ],
 			"ubus": {
-				"service": [ "list", "delete" ]
+				"service": [ "list", "delete" ],
+				"file": [ "exec" ]
 			},
 			"uci": [ "echworkers" ]
 		},
@@ -20,6 +22,10 @@
 				"/usr/bin/echworkers-gfwlist": [ "exec" ],
 				"/usr/bin/echworkers-control": [ "exec" ],
 				"/etc/echworkers/*": [ "write" ]
+			},
+			"cgi-io": [ "exec" ],
+			"ubus": {
+				"file": [ "exec" ]
 			},
 			"uci": [ "echworkers" ]
 		}
