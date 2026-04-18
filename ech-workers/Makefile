@@ -1,8 +1,9 @@
 include $(TOPDIR)/rules.mk
+GO_BIN := $(lastword $(sort $(wildcard $(STAGING_DIR_HOSTPKG)/lib/go-*/bin/go)))
 
 PKG_NAME:=ech-workers
 PKG_VERSION:=1.4
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/byJoey/ech-wk.git
@@ -63,8 +64,8 @@ define Build/Prepare
 	$(SED) 's|case modeHTTPProxy:|case modeTProxy:\n\t\treturn nil\n\tcase modeHTTPProxy:|' $(PKG_BUILD_DIR)/ech-workers.go
 	# 上游没有 go.mod，需要创建
 	cd $(PKG_BUILD_DIR) && \
-		$(STAGING_DIR_HOSTPKG)/bin/go mod init ech-workers && \
-		$(STAGING_DIR_HOSTPKG)/bin/go mod tidy
+		$(GO_BIN) mod init ech-workers && \
+		$(GO_BIN) mod tidy
 endef
 
 define Build/Compile
@@ -72,7 +73,7 @@ define Build/Compile
 		CGO_ENABLED=0 \
 		GOOS=linux \
 		GOARCH=$(GO_ARCH) \
-		$(STAGING_DIR_HOSTPKG)/bin/go build \
+		$(GO_BIN) build \
 		-trimpath \
 		-ldflags "-s -w" \
 		-o $(PKG_BUILD_DIR)/ech-workers \
